@@ -791,7 +791,7 @@ Electron и electron-builder, `TEMP` сборки и прогона, устан�
 | `linux/run/`, `linux/run-u5-cli-only/` | отчёты, снимки, SSE, журналы плагина, модели и приложения: прогон с правкой и без правки U5 в Desktop |
 | `linux/*.log`, `windows/*.log` | сборка: CLI, `out/`, electron-builder, `/usr/bin/time` |
 | `windows/stand/` | стенд: `report.json`, `shots/`, `desktop-logs/`, `logs/` (сборка, `snapshot.json` до и после) |
-| `dist-linux/`, `dist-windows/` | AppImage и распакованное приложение для Windows, собранное на Linux |
+| `dist-linux/` | AppImage. Распакованные приложения, копии CLI и кэши сборки удалены после прогонов |
 
 **Не проверено:**
 - AppImage в смонтированном виде (FUSE) и пакет deb. На машине нет `libfuse2`, системные пакеты не ставились. Распакованный
