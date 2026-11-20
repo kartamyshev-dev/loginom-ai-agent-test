@@ -12,8 +12,8 @@
 | `patches/` | Швы в файлах OpenCode: U1 (плагин продукта последним и под защитой), U3 (права при прямой активации навыка), U5 (своя служба на продукт и профиль), реестр страниц и пункт навигации в UI, отрисовка инструментов (`ui-tool-registry.patch`) и пример отрисовщика Loginom (`ui-tool-renderer-loginom.patch`) |
 | `plugin/loginom-product/` | Прототип серверного плагина: шлюз инструментов (`context` + `execute.before`), источник навыков, допуск через RPC и `loginom.access`, имитация аренды Host, журнал действий (`LOGINOM_SPIKE_JOURNAL`, S11) |
 | `plugin/impostor/`, `plugin/gui-probe/` | Самозванец для S8 и пакет с GUI-бандлом для S9 |
-| `plugin/loginom-ui-demo/` | Демонстрационные инструменты Loginom для части 2: шаги, сохранение с разрешением, правка пакета с `metadata.changes`, сбой |
-| `harness/` | Сценарная модель (OpenAI-совместимая заглушка), обвязка сервера, проверки `s1.ts` … `s9.ts`, `s11.ts` и сервер для веб-приложения `ui.ts` (часть 2) |
+| `plugin/loginom-ui-demo/` | Демонстрационные инструменты Loginom для части 2: шаги, сохранение с разрешением, правка пакета с `metadata.changes`, сбой. GUI-часть `gui.cjs` (B0.1): страница с пунктом навигации и RPC из окна |
+| `harness/` | Сценарная модель (OpenAI-совместимая заглушка), обвязка сервера, проверки `s1.ts` … `s9.ts`, `s11.ts`, сервер для веб-приложения `ui.ts` (часть 2) и окно Desktop `desktop.ts` (B0.1) |
 | `run-server.sh` | Запуск сервера песочницы с изолированными каталогами XDG |
 | `setup-windows.sh`, `setup-windows.ps1` | Песочница на стенде Windows по SSH: архив тега с правками, переносной Bun, зависимости, запуск проверок и уборка |
 
@@ -35,9 +35,13 @@ bun s8.ts   # подмена id плагина продукта: база и U1
 bun s9.ts   # навыки Hub с id через точку, reload, KV, GUI-бандл
 bun s11.ts  # журнал действий: инструмент напрямую, CodeMode, подсессия, расписание, каждый запрос к модели (~1,5 мин)
 bun ui.ts   # часть 2: сервер :4096 для веб-приложения, сценарии в .run/ui/prompts.json
+bun desktop.ts   # B0.1: окно Desktop под Xvfb со своей службой, снимки и report.json в .run/b0-window/ (~22 с)
 ```
 
 Веб-приложение для части 2: `cd opencode/packages/app && VITE_OPENCODE_SERVER_PORT=4096 bun dev` (порт 5173).
+
+Окно Desktop для B0.1 собирается один раз, без упаковки (около 25 с, пик памяти 2,6 ГБ):
+`cd opencode/packages/desktop && electron_config_cache=$PWD/../../../.run/cache/electron bun run install-electron && bun ./script/copy-icons.ts dev && OPENCODE_CHANNEL=local bunx electron-vite build`.
 
 ### Windows (S5, S9)
 
