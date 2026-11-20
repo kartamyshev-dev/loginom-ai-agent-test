@@ -2,7 +2,8 @@
 //   SPIKE-SCRIPT:<base64 of JSON array of steps>
 // A step is { tool, input } (one tool call) or { text } (final answer) or { hang: ms } (stall before answering).
 // The step index is the number of assistant turns since the last scripted user message, so the model is stateless.
-// Requests without tools (titles, summaries) get a short text. Every request is appended to the log as JSON.
+// Requests without tools (titles, summaries) get a short text. Every request is appended to the log as JSON with
+// the Session ID header, so a check can reconcile model requests per Session.
 import { appendFileSync } from "node:fs"
 
 type Step = { tool: string; input: unknown } | { text: string } | { hang: number } | { status: number }
@@ -47,7 +48,9 @@ export function startMock(port: number, logFile: string) {
       const body = (await request.json()) as { messages: ChatMessage[]; tools?: { function: { name: string } }[] }
       const tools = (body.tools ?? []).map((tool) => tool.function.name)
       const step = tools.length === 0 ? { text: "Spike title" } : (nextStep(body.messages) ?? { text: "no script" })
-      appendFileSync(logFile, JSON.stringify({ t: Date.now(), n: ++calls, tools, step, system: body.messages.filter((m) => m.role === "system").map((m) => text(m.content)).join("\n") }) + "\n")
+      // Session requests carry `x-opencode-session-id`; stateless generation (`Generate.text`) does not.
+      const sessionID = request.headers.get("x-opencode-session-id")
+      appendFileSync(logFile, JSON.stringify({ t: Date.now(), n: ++calls, sessionID, tools, step, system: body.messages.filter((m) => m.role === "system").map((m) => text(m.content)).join("\n") }) + "\n")
       if ("status" in step)
         return Response.json({ error: { message: "spike provider failure", type: "invalid_request_error" } }, { status: step.status })
       const stream = new ReadableStream({

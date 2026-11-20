@@ -8,6 +8,8 @@ const LOG = process.env.LOGINOM_SPIKE_LOG ?? "/tmp/loginom-spike.jsonl"
 const STATE = process.env.LOGINOM_SPIKE_STATE ?? "/tmp/loginom-spike-state"
 const BUNDLED = process.env.LOGINOM_SPIKE_BUNDLED_SKILLS ?? ""
 const HUB = process.env.LOGINOM_SPIKE_HUB_SKILLS ?? ""
+// Administrator action journal (S11): JSONL, written only when the variable is set so the other checks keep their hooks.
+const JOURNAL = process.env.LOGINOM_SPIKE_JOURNAL ?? ""
 const LEASE_TTL_MS = 3000
 
 // Privileged tools exist only while the session holds a grant. `loginom_dock_codemode` deliberately keeps the
@@ -21,6 +23,11 @@ const heartbeats = new Map<string, ReturnType<typeof setInterval>>()
 
 function log(event: string, data: Record<string, unknown> = {}) {
   appendFileSync(LOG, JSON.stringify({ t: Date.now(), pid: process.pid, event, ...data }) + "\n")
+}
+
+// Metadata only: no request bodies, no headers (they carry provider credentials), no tool output.
+function journal(kind: string, data: Record<string, unknown>) {
+  if (JOURNAL) appendFileSync(JOURNAL, JSON.stringify({ t: Date.now(), kind, ...data }) + "\n")
 }
 
 function leaseFile(sessionID: string) {
@@ -109,6 +116,32 @@ export default Plugin.define({
     log("setup", { location: ctx.location.directory })
     recoverStaleLeases()
 
+    // Journal hooks go before the tool gate so a call the gate rejects is still recorded. A call rejected by an
+    // execute.before hook of a plugin that runs earlier never reaches these hooks.
+    if (JOURNAL) {
+      await ctx.tool.hook("execute.before", (event) => {
+        journal("tool.before", { sessionID: event.sessionID, agent: event.agent, messageID: event.messageID, callID: event.id, tool: event.tool, input: event.input })
+      })
+      await ctx.tool.hook("execute.after", (event) => {
+        journal("tool.after", {
+          sessionID: event.sessionID,
+          callID: event.id,
+          tool: event.tool,
+          status: event.status,
+          ...(event.status === "error" ? { error: event.error.message } : {}),
+        })
+      })
+      await ctx.session.hook("model.request", (event) => {
+        journal("model.request", { sessionID: event.sessionID, agent: event.agent, requestKind: event.kind, model: `${event.model.providerID}/${event.model.id}` })
+      })
+      await ctx.session.hook("http.request", (event) => {
+        journal("http.request", { sessionID: event.sessionID, requestKind: event.kind, method: event.request.method, path: new URL(event.request.url).pathname })
+      })
+      await ctx.session.hook("http.response", (event) => {
+        journal("http.response", { sessionID: event.sessionID, requestKind: event.kind, status: event.response.status })
+      })
+    }
+
     await ctx.tool.transform((editor) => {
       editor.add({
         name: "loginom_dock_prepare",
@@ -160,6 +193,7 @@ export default Plugin.define({
     await ctx.tool.hook("execute.before", (event) => {
       const allowed = !PRIVILEGED.has(event.tool) || grants.has(event.sessionID)
       log("execute.before", { sessionID: event.sessionID, tool: event.tool, allowed })
+      if (!allowed) journal("tool.denied", { sessionID: event.sessionID, callID: event.id, tool: event.tool })
       if (!allowed) throw new Error(`loginom.product: ${event.tool} requires a Loginom access grant`)
     })
 
