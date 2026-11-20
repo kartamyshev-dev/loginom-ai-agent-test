@@ -15,6 +15,8 @@ function service(run: string, extra: Record<string, string> = {}, tag = "a") {
     env: {
       ...process.env,
       HOME: path.join(dir, "home"),
+      // os.homedir() on Windows follows USERPROFILE; the service changes into it on start.
+      USERPROFILE: path.join(dir, "home"),
       XDG_DATA_HOME: path.join(dir, "data"),
       XDG_CONFIG_HOME: path.join(dir, "config"),
       XDG_STATE_HOME: path.join(dir, "state"),
