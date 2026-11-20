@@ -1,0 +1,58 @@
+diff --git a/packages/desktop/src/main/service/background-service.ts b/packages/desktop/src/main/service/background-service.ts
+index 7bf76da471..f8c4d52aab 100644
+--- a/packages/desktop/src/main/service/background-service.ts
++++ b/packages/desktop/src/main/service/background-service.ts
+@@ -10,7 +10,7 @@ import { cleanStages } from "./cli-stages"
+ import { keptStages, serviceVersion, shouldRetryEnsure } from "./cli-version"
+ import { DesktopCli } from "./desktop-cli"
+ import { SidecarCredentials } from "./sidecar-credentials"
+-import { takeSidecarProbe } from "./sidecar-probe"
++import { serviceFile, takeSidecarProbe } from "./sidecar-probe"
+ 
+ export * as BackgroundService from "./background-service"
+ 
+@@ -109,13 +109,14 @@ const prepare = Effect.fn("BackgroundService.prepare")(function* (mode: Backgrou
+   const client = yield* Effect.promise(() => import("@opencode/client/service"))
+ 
+   const file =
+-    process.env.OPENCODE_DESKTOP_SERVER_CHANNEL === "local"
++    serviceFile() ??
++    (process.env.OPENCODE_DESKTOP_SERVER_CHANNEL === "local"
+       ? path.join(
+           process.env.XDG_STATE_HOME ?? path.join(app.getPath("home"), ".local", "state"),
+           "opencode",
+           "service-local.json",
+         )
+-      : undefined
++      : undefined)
+ 
+   return { cli, client, file, isolated, version }
+ })
+diff --git a/packages/desktop/src/main/service/sidecar-probe.ts b/packages/desktop/src/main/service/sidecar-probe.ts
+index 5f1ceedbc5..0b61c04d8d 100644
+--- a/packages/desktop/src/main/service/sidecar-probe.ts
++++ b/packages/desktop/src/main/service/sidecar-probe.ts
+@@ -1,4 +1,5 @@
+ import { readFileSync } from "node:fs"
++import { homedir } from "node:os"
+ import path from "node:path"
+ import { app } from "electron"
+ import type { Endpoint } from "@opencode/client/service"
+@@ -16,7 +17,16 @@ export function startSidecarProbe() {
+   const version = CHANNEL === "beta" ? undefined : bundledVersion()
+ 
+   if (version === "") return
+-  probe = import("@opencode/client/service").then(({ Service }) => Service.discover({ version })).catch(() => undefined)
++  probe = import("@opencode/client/service").then(({ Service }) => Service.discover({ version, file: serviceFile() })).catch(() => undefined)
++}
++
++// Fork seam (spike U5): the app looks for its service under the same identity the CLI registers with, so it never
++// adopts the default `service.json` of another product or profile. LOGINOM_SPIKE_U5_DESKTOP=0 measures the CLI-only seam.
++export function serviceFile() {
++  if (process.env.LOGINOM_SPIKE_U5_DESKTOP === "0") return undefined
++  const identity = process.env.LOGINOM_SPIKE_U5_IDENTITY?.replace(/[^a-zA-Z0-9._-]/g, "-")
++  const state = process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local", "state")
++  return identity ? path.join(state, "opencode", `service-${identity}.json`) : undefined
+ }
+ 
+ /** The probe's result, once: a later connect must not adopt a service that may have exited since boot. */
