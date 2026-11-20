@@ -243,34 +243,44 @@
 | Вне пяти: `POST /api/experimental/generate/text` | заглушка получила запрос без сессии, в журнале 0 записей | не видно |
 | Вне пяти: проверка расписания `if: { run }` | команда выполнилась по расписанию (файл-метка появился после конца хода), в журнале 0 записей | не видно |
 
-Сверка запросов к модели (выдержка, id сессий сокращены):
+Сверка запросов к модели (выдержка):
 
 ```json
-{"s":"ses_e06974b3","mock":4,"modelRequest":4,"httpRequest":4,"httpResponse":4,"kinds":["title","primary","primary","primary"]}
-{"s":"ses_e069742c","mock":2,"modelRequest":2,"httpRequest":2,"httpResponse":2,"kinds":["primary","primary"]}
-{"s":"ses_e06966c2","mock":2,"modelRequest":2,"httpRequest":2,"httpResponse":2,"kinds":["title","primary"],"statuses":[200,400]}
-{"s":"null","mock":1,"modelRequest":0,"httpRequest":0,"httpResponse":0}
+{"path":"direct","mock":4,"modelRequest":4,"httpRequest":4,"httpResponse":4,"kinds":["title","primary","primary","primary"]}
+{"path":"child","mock":2,"modelRequest":2,"httpRequest":2,"httpResponse":2,"kinds":["primary","primary"]}
+{"path":"scheduled","mock":5,"modelRequest":5,"httpRequest":5,"httpResponse":5,"kinds":["title","primary","primary","primary","primary"]}
+{"path":"failed","mock":2,"modelRequest":2,"httpRequest":2,"httpResponse":2,"kinds":["title","primary"],"statuses":[200,400]}
+{"path":"no session","mock":1,"modelRequest":0,"httpRequest":0,"httpResponse":0}
 ```
 
-Вторая строка — ребёнок `subagent`, третья — отказ провайдера (HTTP 400), последняя — `generate/text`. Итог проверки:
+`child` — ребёнок `subagent`, `failed` — отказ провайдера (HTTP 400), `no session` — `generate/text`. Итог проверки:
 
 ```json
 "paths": {"direct":true,"codemode":true,"subagent":true,"schedule":true,"modelRequests":true},
-"gaps": {"generateBypass":true,"shellCheckBypass":true}
+"probes": {"generate":{"ran":true,"journaled":false},"shellCheck":{"ran":true,"journaled":false},"codeCheck":{"ran":true,"journaled":true}}
 ```
 
+Если проба вне пяти путей не сработала, итог — FAIL: такая проба ничего не измерила. Это случаи, когда маршрут не ответил 200, метка не появилась или проверка `code` не отработала по слоту.
+
 **Пути в обход хуков и нужные швы (в оценку этапа F):**
-1. **Запрос к модели без сессии.** `Generate.text`, `image`, `decisions` в `core/src/generate.ts` вызывают клиента модели напрямую, без хуков `session`. Кто туда приходит:
+1. **Запрос к модели без сессии.** Проверено на `Generate.text` (`core/src/generate.ts`): клиент модели вызывается напрямую, без хуков `session`. `image` и `decisions` устроены так же, но их проба не запускалась. Кто туда приходит:
    - маршрут `POST /api/experimental/generate/text` и его старый псевдоним;
    - `ctx.generate` в плагинах;
-   - инструмент `image_generate`: сам вызов журнал видит, а запрос к модели изображений — нет.
+   - инструмент `image_generate`: сам вызов журнал видит, а запрос к модели изображений, по коду, — нет.
 
-   Нужен шов в вызове провайдера. Варианты: хук в `Generate` перед вызовом клиента или один хук в общем `LLMClient` / `RequestExecutor`, который покрыл бы и сессии. В исходниках окна приложения v2.3.0 вызовов этого маршрута не нашлось (`/btw` идёт через `session.generate`).
+   Нужен шов в вызове провайдера. Варианты не равны:
+   - хук в `Generate` перед вызовом клиентов — только этот путь;
+   - хук в `LLMClient` — текст, и сессии, и `Generate.text`, но не изображения и решения;
+   - хук в общем `RequestExecutor` — по комментарию в `generate.ts`, на нём стоят и `LLMClient`, и клиенты изображений и решений, то есть все три плюс сессии.
+
+   В исходниках окна приложения v2.3.0 вызовов этого маршрута не нашлось (`/btw` идёт через `session.generate`).
 2. **Проверка расписания командой оболочки.** `runShell` в `core/src/schedule/check.ts` запускает процесс напрямую, мимо `Tool`. Нет ни хука, ни события шины, есть только `lastOutcome` в состоянии расписания. Нужен шов в `runShell`: хук или событие с сессией, командой и исходом. Другой вариант — продукт запрещает проверки `run`.
 
-   Проверка `if: { code }` идёт через `Tool.check` и журналом видна: по слотам `opencode_models` с id `call_msg_<расписание>_check_<N>_0` без запроса к модели. Расписания стоят за флагом `schedules`, а он в выпускных сборках по умолчанию выключен.
+   Проверка `if: { code }` идёт через `Tool.check` и журналом видна. При создании — `opencode_models` с id `call_msg_<расписание>_check_0_0`, затем по слотам `check_2`, `check_3`, `check_4`, без запроса к модели. `check_1` нет из-за нумерации, а не из-за пропуска: проверка при создании засчитывается как первая, и слоты считаются от `checks + 1`.
 
-`Snapshot.execute` править не нужно: все вызовы инструментов, включая вложенные в CodeMode и в проверки расписания, проходят через `beforeExecute` и `executeTool`.
+   Флаг `schedules` по умолчанию включён только в каналах `local` и `dev`. Его включают и `OPENCODE_FLAGS`, и записи конфига. Поэтому выключенный по умолчанию флаг путь не закрывает: продукту нужно запрещать его явно или ставить шов.
+
+`Snapshot.execute` править не нужно: все локальные вызовы инструментов из проверки проходят через `beforeExecute` и `executeTool`. Это вызовы напрямую, вложенные в CodeMode и в проверку расписания `code`. Инструменты MCP и инструменты, которые выполняет провайдер, не проверялись.
 
 **Находки для этапа F:**
 - Вложенный вызов CodeMode получает тот же id, что и внешний `execute`. Отличить его можно по имени инструмента, а несколько вызовов одного инструмента внутри одного `execute` — только по порядку.
@@ -278,7 +288,8 @@
 - У вызова, отклонённого в `execute.before`, нет `execute.after` (проверено); у неизвестного или снятого хуком `context` инструмента — тоже (по коду `Snapshot.execute`). Журнал должен считать `before` без `after` попыткой.
 - `trigger` останавливает цепочку на первом упавшем хуке (по коду `core/src/plugin/hooks.ts`). Вызов, отклонённый хуком плагина, стоящего раньше продукта (U1 ставит продукт последним), журнал не увидит.
 - `model.request` срабатывает один раз на подготовленный запрос, `http.request` — на каждый HTTP-вызов. Здесь их числа совпали. Регистрация `http.*` переводит все запросы через `Request`/`Response`; влияние на скорость не мерилось.
-- Создание проверок `run` и `code` не спросило разрешений (`asked: null`): так настроены права песочницы по умолчанию.
+- Создание проверок `run` и `code` не спросило разрешений (`asked: null`); причина не выяснялась.
+- Вход инструмента пишется в журнал целиком. Что скрывать (пути, тексты, данные пакета), нужно решить на этапе F.
 
 **Не покрыто:**
 - транспорт WebSocket: по коду `model.request` срабатывает, а кадры идут через `experimental.ws.*`, не через `http.*`;
