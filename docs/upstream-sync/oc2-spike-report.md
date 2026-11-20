@@ -437,3 +437,149 @@ S9:
 - инструменты MCP и инструменты, которые выполняет сам провайдер;
 - действия пользователя: оболочка `!cmd`, активация навыка через API;
 - Windows.
+
+### B1.1 Точка отсечения
+
+20.11.2026.
+- **База:** `v040` форка, `6adfe42cea`.
+- **Точка отсечения:** `a080f7725c` (`upstream/v040`, слияние PR #1243), на 237 коммитов впереди базы (из них 73 слияния, 10–20.11.2026). Внутри — функция «дашборды узлов».
+- **Стенд:** Linux x64, запуск от root, 11 ГБ ОЗУ, Bun 1.4.3, Node 24.19.0 (сумма совпадает с `nodeSha256` из `loginom-release.json`).
+- **Команды:** раздел «Как запускать» в `guarantees.md`, файл одинаков на обоих SHA. Каждый SHA гонялся в чистом дереве (база — в новом detached-дереве, точка отсечения — после `git clean -fdx`) с `bun install --frozen-lockfile`.
+
+| Набор | База | Точка отсечения, подготовка по документам | Точка отсечения + `npm ci` шаблона dashboard (как unit CI) |
+|---|---|---|---|
+| `product` | 55 / 0 | 61 / 0 | 61 / 0 |
+| `core` (`flag-identity`) | 2 / 0 | 2 / 0 | 2 / 0 |
+| `opencode` (7 каталогов) | 1777 / 6, 15 пропущено | 1842 / **23**, 15 пропущено | 1859 / 6, 15 пропущено |
+| `loginom-host` | 502 / 2, 12 пропущено | 534 / 2, 12 пропущено | 534 / 2, 12 пропущено |
+| `desktop` | 254 / 1, 6 пропущено | 268 / 1, 6 пропущено | 268 / 1, 6 пропущено |
+| `selftest.sh` | PASS | PASS | PASS |
+
+Формат ячеек: прошло / упало. Тесты сравнивались по паре «файл + имя» (JUnit).
+
+**Новые падения: 17 при подготовке по документам, 0 при подготовке как в CI.**
+- **Где:** все 17 — в новых тестах, на базе этих файлов нет. 16 в `test/tool/dashboard.test.ts`:
+  - `a changed server version requires new confirmation and preserves edited sources`;
+  - `a publication confirmation cannot send the old draft after recreation`;
+  - `dashboard_draft limits the complete diagnostic output to whole UTF-8 code points`;
+  - `delete keeps sources and live preview after {denied, invalid, invalid count, unknown}`;
+  - `host failure preserves the draft and its specific reason without retry: {DASHBOARD_ACCESS_DENIED, DASHBOARD_VERSION_EXISTS, DASHBOARD_WRITE_UNKNOWN, LOGINOM_RUNTIME_CLEANUP_FAILED}`;
+  - `interruption joins an active publication build before removing its operation`;
+  - `publication limits the complete model output to whole UTF-8 code points`;
+  - `publishing with a global allow still asks once for the bound node and package: {abort, once, reject}`.
+
+  Ещё одно — в `test/cli/standalone-dashboard.test.ts`: `standalone dashboard starts from the snapshot and preserves explicit publication approval`.
+- **Повтор в одиночку:** оба файла падают так же (13/16 и 7/1).
+- **Причина у всех одна:** `DASHBOARD_RESOURCES_MISSING: в установке нет компонентов dashboard`. Тестовые ресурсы ссылаются на `packages/dashboard/template`, а его `node_modules` ставится отдельным `npm ci`.
+  - Задание `unit` в `.github/workflows/test.yml` делает этот шаг, «Как запускать» в `guarantees.md` и шаг `install` в `procedure.md` — нет.
+  - После `npm ci --ignore-scripts` в `packages/dashboard/template`, как в CI, оба файла проходят в одиночку (29/0 и 8/0), а полный прогон даёт третий столбец.
+- **Тесты с базы:** ни один не покраснел, ни один не пропал.
+  - 8 тестов `loginom-host`, которых нет на точке отсечения, переименованы, и под новыми именами проходят:
+    - `file-reference`, случай `bytes`: переименован и изменён, тест теперь сам сдвигает mtime;
+    - 6 случаев `saved-package-shutdown` «private CLI policies reach …»;
+    - полная сборка `stage-resources`, пропущенная на обеих сторонах.
+  - Число пропущенных тестов не выросло.
+- **Предложение владельцу:** добавить `npm ci` шаблона в «Как запускать» и в шаг `install`. Здесь документы не правились.
+
+**Базовые падения стенда — одни и те же на базе и в обоих прогонах точки отсечения** (сверены имена и блоки ошибок; отличается только номер строки в `managed-work-entry`):
+- **Отказ доступа, который не срабатывает под root.**
+  - В `opencode` 5 тестов:
+    - `standalone-file-errors` (`denied`);
+    - `loginom-local-file` (denied);
+    - `package-docs` (OS read refusal);
+    - `write` (OS denies write access);
+    - `file-snapshot` (OS denial).
+  - В `loginom-host` — `managed-work-entry`: «Expected refusal», по коду теста это случай `denied` через `chmod 0`.
+  - В `desktop` — `log-retention` (`cannot be deleted`).
+- **`cli-manifest` «archive verification preserves manifest modes under a private umask»** — падение, уже известное по разделу «Базовые падения стенда».
+- **`opencode` `test/cli/standalone.test.ts` «provider management uses the CLI profile without Loginom configuration or bundle»** (охранный тест G2): в корне появляется лишний каталог `desktop-cache`. Это `XDG_CACHE_HOME` теста, в него пишет dconf (`desktop-cache/dconf/user`), а на стенде установлен `dconf-gsettings-backend`.
+  - С переносным Bun 1.3.14 на базе этот файл падает так же, то есть дело не в версии Bun.
+  - На обеих сторонах падение одинаковое. Но два утверждения после упавшего (профиль без `.writer`, пустой `profile/loginom`) не выполнялись ни на базе, ни на точке отсечения.
+
+**Отступления от буквальных команд — одинаковые для обеих сторон:**
+1. Шаг `install` из `procedure.md`: `npm ci --ignore-scripts --omit=dev --no-audit --fund=false --workspaces=false` в `packages/loginom-runtime/client`. Без него `product` 54/1: в `automation-routing` нет `acorn`.
+2. `LOGINOM_AI_AGENT_TEST_NODE` и `LOGINOM_AI_AGENT_NODE_SOURCE` заданы для всех наборов, как в задании `unit` CI. В «Как запускать» переменная есть только у `loginom-host`, а без неё у `opencode` на базе 66 падений вместо 6. Это второй пробел в командах.
+3. Node 24.19.0 стоит первым в `PATH`, как `node-version-file` в CI. Системный Node — другой версии.
+4. Chromium ревизии 1246 на стенде нет, поэтому браузерные переменные не заданы.
+5. Bun 1.4.3 вместо закреплённого 1.3.14. Из 9 базовых падений 7 — отказ доступа под root, 1 — известное umask, 1 — dconf; последнее повторено на Bun 1.3.14. Полные наборы на 1.3.14 не гонялись.
+
+**Объём для ручного переноса** (`git diff --shortstat 6adfe42cea a080f7725c`):
+
+| Часть | Файлов | Строк |
+|---|---|---|
+| `packages/opencode` | 46 | +3549 −170 |
+| `packages/dashboard` (новый пакет) | 111 | +15612 |
+| остальное | 368 | +23357 −1357 |
+| всего | 525 | +42518 −1527 |
+
+**Что в «остальном»:**
+- 108 файлов `docs` (+10851 −264);
+- `packages/loginom-runtime`: 85 файлов (+3609 −352);
+- `packages/app`: 40 файлов (+1714 −255);
+- `packages/desktop`: 29 файлов (+1437 −192);
+- `packages/loginom-host`: 26 файлов (+913 −117);
+- `packages/product`: 17 файлов (+328 −96);
+- `deploy`, `dashboard`, `scripts`, `.gitleaksignore` и мелочь.
+
+**В `packages/opencode`:**
+- **Объём:**
+  - `src` — 26 файлов, +779 −108, из них 3 новых;
+  - `test` — 18 файлов, +2761 −62, из них 5 новых;
+  - `AGENTS.md` и `package.json` — +9.
+- **Швы гарантий:** изменены `product/{tool-policy,tool-contributor,turn-lifecycle}.ts` и `session/{prompt,tools,task-scope}.ts`. Их охранные тесты на точке отсечения зелёные, но при переносе на v2 эти правки придётся учесть.
+
+| Файл (`packages/opencode/`) | Статус | Строк |
+|---|---|---|
+| `AGENTS.md` | изменён | +8 −0 |
+| `package.json` | изменён | +1 −0 |
+| `src/cli/cmd/import.ts` | изменён | +35 −9 |
+| `src/cli/cmd/run.ts` | изменён | +64 −10 |
+| `src/cli/cmd/run/runtime.stdin.ts` | изменён | +44 −0 |
+| `src/cli/cmd/run/tool.ts` | изменён | +3 −0 |
+| `src/cli/standalone-dashboard.ts` | новый | +20 −0 |
+| `src/cli/standalone-run.ts` | изменён | +63 −6 |
+| `src/command/index.ts` | изменён | +3 −1 |
+| `src/format/index.ts` | изменён | +2 −1 |
+| `src/lsp/lsp.ts` | изменён | +2 −1 |
+| `src/permission/index.ts` | изменён | +10 −6 |
+| `src/product/dashboard-session.ts` | новый | +71 −0 |
+| `src/product/tool-contributor.ts` | изменён | +11 −0 |
+| `src/product/tool-policy.ts` | изменён | +17 −3 |
+| `src/product/turn-lifecycle.ts` | изменён | +21 −15 |
+| `src/session/prompt.ts` | изменён | +27 −6 |
+| `src/session/session.ts` | изменён | +44 −2 |
+| `src/session/task-scope.ts` | изменён | +2 −1 |
+| `src/session/tools.ts` | изменён | +20 −3 |
+| `src/tool/apply_patch.ts` | изменён | +10 −13 |
+| `src/tool/dashboard.ts` | новый | +226 −0 |
+| `src/tool/edit.ts` | изменён | +7 −6 |
+| `src/tool/external-directory.ts` | изменён | +51 −2 |
+| `src/tool/glob.ts` | изменён | +10 −9 |
+| `src/tool/grep.ts` | изменён | +10 −10 |
+| `src/tool/tool.ts` | изменён | +1 −0 |
+| `src/tool/write.ts` | изменён | +5 −4 |
+| `test/cli/bundled-skills.test.ts` | изменён | +5 −5 |
+| `test/cli/import.test.ts` | изменён | +68 −0 |
+| `test/cli/standalone-dashboard-pty.py` | новый | +72 −0 |
+| `test/cli/standalone-dashboard.test.ts` | новый | +498 −0 |
+| `test/fixture/standalone.ts` | изменён | +41 −30 |
+| `test/product/dashboard-session.test.ts` | новый | +134 −0 |
+| `test/product/tool-policy.test.ts` | изменён | +31 −0 |
+| `test/product/turn-lifecycle.test.ts` | изменён | +30 −1 |
+| `test/server/httpapi-sync.test.ts` | изменён | +44 −0 |
+| `test/session/profile-tools.test.ts` | изменён | +96 −4 |
+| `test/session/prompt.test.ts` | изменён | +375 −14 |
+| `test/session/session.test.ts` | изменён | +9 −2 |
+| `test/session/task-scope.test.ts` | изменён | +29 −0 |
+| `test/session/tools.test.ts` | изменён | +10 −2 |
+| `test/skill/bundled-skills.test.ts` | изменён | +3 −3 |
+| `test/tool/dashboard-guard.test.ts` | новый | +523 −0 |
+| `test/tool/dashboard.test.ts` | новый | +792 −0 |
+| `test/tool/external-directory.test.ts` | изменён | +1 −1 |
+
+**Не прогонялось:**
+- живые сценарии Desktop/CLI;
+- `test/server` в `opencode`: там изменён `httpapi-sync.test.ts`, но в командах гарантий его нет;
+- typecheck;
+- полная сборка ресурсов `stage-resources` — нужен Chromium 1246;
+- `desktop` `draft-store.test.ts` — исключён самой командой.
