@@ -41,7 +41,7 @@ bun desktop.ts   # B0.1: окно Desktop под Xvfb со своей служб
 Веб-приложение для части 2: `cd opencode/packages/app && VITE_OPENCODE_SERVER_PORT=4096 bun dev` (порт 5173).
 
 Окно Desktop для B0.1 собирается один раз, без упаковки (около 25 с, пик памяти 2,6 ГБ):
-`cd opencode/packages/desktop && electron_config_cache=$PWD/../../../.run/cache/electron bun run install-electron && bun ./script/copy-icons.ts dev && OPENCODE_CHANNEL=local bunx electron-vite build`.
+`cd opencode/packages/desktop && mkdir -p ../../../.run/cache/electron && electron_config_cache=$(cd ../../../.run/cache/electron && pwd) bun run install-electron && bun ./script/copy-icons.ts dev && OPENCODE_CHANNEL=local bunx electron-vite build`.
 
 ### Windows (S5, S9)
 
