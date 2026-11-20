@@ -54,8 +54,8 @@ ssh winstand powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\lab\b0-wind
 ssh winstand powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\lab\b0-windows\setup-windows.ps1' -Action clean
 ```
 
-Первый запуск сервера после установки холодный и идёт дольше 18 с, а паузы в `s5.ts` рассчитаны на тёплый старт.
-Поэтому перед `s5` запускается `smoke`. JSON печатается в SSH-сессию. Журналы лежат в `C:\lab\b0-windows\oc2\.run\`,
+Первый `s5` после установки может не успеть поднять службы в базовых сценариях за паузы 6 и 12 с. Тогда его
+повторяют, строки U5 от этого не меняются. JSON печатается в SSH-сессию. Журналы лежат в `C:\lab\b0-windows\oc2\.run\`,
 их забирают по scp до `clean`.
 На Windows `env.ts` запускает сервер без `run-server.sh` и задаёт `USERPROFILE` рядом с `HOME`.
 S1–S4 и S6–S8 на Windows не запускались.
