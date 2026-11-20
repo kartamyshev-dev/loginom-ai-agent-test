@@ -15,6 +15,7 @@
 | `plugin/loginom-ui-demo/` | Демонстрационные инструменты Loginom для части 2: шаги, сохранение с разрешением, правка пакета с `metadata.changes`, сбой |
 | `harness/` | Сценарная модель (OpenAI-совместимая заглушка), обвязка сервера, проверки `s1.ts` … `s9.ts`, `s11.ts` и сервер для веб-приложения `ui.ts` (часть 2) |
 | `run-server.sh` | Запуск сервера песочницы с изолированными каталогами XDG |
+| `setup-windows.sh`, `setup-windows.ps1` | Песочница на стенде Windows по SSH: архив тега с правками, переносной Bun, зависимости, запуск проверок и уборка |
 
 Каталоги `opencode/` и `.run/` и ссылки `node_modules` в Git не входят.
 
@@ -37,6 +38,28 @@ bun ui.ts   # часть 2: сервер :4096 для веб-приложени�
 ```
 
 Веб-приложение для части 2: `cd opencode/packages/app && VITE_OPENCODE_SERVER_PORT=4096 bun dev` (порт 5173).
+
+### Windows (S5, S9)
+
+На стенде нужны только штатный Windows PowerShell 5.1, `tar.exe`, `curl.exe` и доступ к GitHub и npm. Git, Node и Bun
+не нужны. Архив тега с наложенными `patches/*.patch` собирается на Linux. `setup-windows.ps1` распаковывает его
+в `C:\lab\b0-windows`, качает переносной Bun 1.4.4, сверяет SHA-256 и ставит зависимости. На процессоре без AVX2
+берётся сборка `baseline`. Кэши Bun, OpenCode и Electron, `TEMP` и домашний каталог тоже лежат в этой папке, в систему
+ничего не ставится.
+
+```sh
+spike/oc2/setup-windows.sh winstand        # один раз: архив, копирование по scp, Bun, bun install
+ssh winstand powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\lab\b0-windows\setup-windows.ps1' -Action run -Check smoke
+ssh winstand powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\lab\b0-windows\setup-windows.ps1' -Action run -Check s5
+ssh winstand powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\lab\b0-windows\setup-windows.ps1' -Action run -Check s9
+ssh winstand powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\lab\b0-windows\setup-windows.ps1' -Action clean
+```
+
+Первый `s5` после установки может не успеть поднять службы в базовых сценариях за паузы 6 и 12 с. Тогда его
+повторяют, строки U5 от этого не меняются. JSON печатается в SSH-сессию. Журналы лежат в `C:\lab\b0-windows\oc2\.run\`,
+их забирают по scp до `clean`.
+На Windows `env.ts` запускает сервер без `run-server.sh` и задаёт `USERPROFILE` рядом с `HOME`.
+S1–S4 и S6–S8 на Windows не запускались.
 
 Каждая проверка печатает JSON с итогом `PASS`/`PARTIAL`/`FAIL` и доказательствами. Журналы лежат
 в `.run/<проверка>/`. Встроенный режим плагина включает `LOGINOM_SPIKE_BUILTIN=1`, правку U3 — `LOGINOM_SPIKE_U3=1`.

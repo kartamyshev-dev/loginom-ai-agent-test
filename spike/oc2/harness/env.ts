@@ -92,8 +92,33 @@ function start(name: string, port: number, env: Record<string, string>, restart 
   const log = path.join(SPIKE, ".run", name, restart ? "serve-restart.log" : "serve.log")
   // SPIKE_STRACE=<file> records every connect/sendto of the server tree for the network audit (S6).
   const trace = env.SPIKE_STRACE ? ["strace", "--kill-on-exit", "-f", "-qq", "-s", "200", "-e", "trace=connect,sendto,sendmsg", "-o", env.SPIKE_STRACE] : []
+  if (process.platform === "win32") return startWindows(name, port, env, log)
   return Bun.spawn([...trace, path.join(SPIKE, "run-server.sh"), name, String(port)], {
     env: { ...process.env, ...env },
+    stdout: Bun.file(log),
+    stderr: Bun.file(`${log}.err`),
+  })
+}
+
+// run-server.sh is POSIX-only: on Windows the same server starts directly with the same isolated directories.
+// os.homedir() there follows USERPROFILE, not HOME.
+function startWindows(name: string, port: number, env: Record<string, string>, log: string) {
+  const run = path.join(SPIKE, ".run", name)
+  mkdirSync(path.join(run, "home"), { recursive: true })
+  return Bun.spawn(["bun", "run", "src/index.ts", "serve", "--port", String(port)], {
+    cwd: path.join(SPIKE, "opencode", "packages", "cli"),
+    env: {
+      ...process.env,
+      ...env,
+      HOME: path.join(run, "home"),
+      USERPROFILE: path.join(run, "home"),
+      XDG_DATA_HOME: path.join(run, "data"),
+      XDG_CONFIG_HOME: path.join(run, "config"),
+      XDG_STATE_HOME: path.join(run, "state"),
+      XDG_CACHE_HOME: path.join(run, "cache"),
+      OPENCODE_SERVER_PASSWORD: "spike",
+      OPENCODE_DISABLE_MODELS_FETCH: process.env.OPENCODE_DISABLE_MODELS_FETCH ?? "1",
+    },
     stdout: Bun.file(log),
     stderr: Bun.file(`${log}.err`),
   })
