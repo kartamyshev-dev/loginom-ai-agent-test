@@ -126,7 +126,10 @@ try {
   await Bun.sleep(1000)
   const mock = env.llm()
   const sessions = [...new Set(mock.map((e) => e.sessionID))]
+  results.sessions = { direct, codemode, parent, child: childID, scheduled, codeCheck, shellCheck, failed }
+  const label = (sessionID: string | null) => Object.entries(results.sessions).find(([, id]) => id === sessionID)?.[0] ?? "no session"
   results.modelRequests = sessions.map((sessionID) => ({
+    path: label(sessionID),
     sessionID,
     mock: mock.filter((e) => e.sessionID === sessionID).length,
     modelRequest: sessionID ? entries(sessionID, "model.request").length : 0,
@@ -167,17 +170,28 @@ try {
       sessionRows.some((row: any) => row.kinds.includes("title")) &&
       sessionRows.some((row: any) => row.statuses.includes(400)),
   }
-  const gaps = {
-    // A model request the scripted model received with no Session header and no journal entry.
-    generateBypass: r.generate.status === 200 && r.modelRequests.some((row: any) => row.sessionID === null && row.mock > 0),
-    // A command the schedule ran on its own slot with nothing in the journal.
-    shellCheckBypass: !r.scheduleChecks.shellCheck.markerBeforeSlots && r.scheduleChecks.shellCheck.markerAfterSlots && r.scheduleChecks.shellCheck.journalAfterTurn.length === 0,
+  // Probes beyond the five paths. A probe that did not run measured nothing, so it fails the check instead of passing.
+  const shell = r.scheduleChecks.shellCheck
+  const probes = {
+    // Stateless generation reached the scripted model; the journal covers it only if every model request is journaled.
+    generate: {
+      ran: r.generate.status === 200 && r.modelRequests.some((row: any) => row.sessionID === null && row.mock > 0),
+      journaled: journal().filter((e) => e.kind === "model.request").length === mock.length,
+    },
+    // The shell check ran on its own slot after the creating turn; the journal covers it only with an entry after that turn.
+    shellCheck: { ran: !shell.markerBeforeSlots && shell.markerAfterSlots, journaled: shell.journalAfterTurn.length > 0 },
+    // The schedule itself reports a slot check; the journal covers it with a check-run tool call after the turn.
+    codeCheck: {
+      ran: r.scheduleChecks.codeCheck.schedule.some((s: any) => s.lastOutcome === "checked"),
+      journaled: r.scheduleChecks.codeCheck.checkRunsJournaled.some((e: any) => e.afterTurn),
+    },
   }
   results.paths = paths
-  results.gaps = gaps
+  results.probes = probes
   const allPaths = Object.values(paths).every(Boolean)
-  const anyGap = Object.values(gaps).some(Boolean)
-  report("S11", allPaths && !anyGap ? "PASS" : allPaths ? "PARTIAL" : "FAIL", results)
+  const allRan = Object.values(probes).every((probe) => probe.ran)
+  const allJournaled = Object.values(probes).every((probe) => probe.journaled)
+  report("S11", !allPaths || !allRan ? "FAIL" : allJournaled ? "PASS" : "PARTIAL", results)
 } finally {
   env.stop()
 }
