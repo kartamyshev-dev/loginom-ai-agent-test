@@ -34,12 +34,20 @@ const MOCK_PORT = 47191
 // exits (see `inherited`), so the second launch takes another one.
 const CDP_PORT = { first: 47192, second: 47193 }
 const IDENTITY = "loginom-ai-agent-desktop"
-const STATE = path.join(ROOT, "state", "opencode")
-const REGISTRATION = path.join(STATE, `service-${IDENTITY}.json`)
+// The Desktop drops XDG_STATE_HOME unless the login shell sets it (desktop/src/main/lifecycle/environment.ts). On Windows
+// it always does, so the service registers under the home folder (USERPROFILE\.local\state); on Linux the shell keeps the
+// test root's value.
+const STATES = [path.join(ROOT, "state", "opencode"), path.join(HOME, ".local", "state", "opencode")]
+const state = () => STATES.find((dir) => existsSync(path.join(dir, `service-${IDENTITY}.json`))) ?? STATES[0]
+const registrationFile = () => path.join(state(), `service-${IDENTITY}.json`)
+const serviceFiles = () => STATES.flatMap((dir) => (existsSync(dir) ? readdirSync(dir) : []).filter((name) => name.startsWith("service")).map((name) => path.relative(RUN, path.join(dir, name))))
+const defaultFile = () => STATES.some((dir) => existsSync(path.join(dir, "service.json")))
 // U5's port for this identity, as S5 (Linux) and B0.2 (Windows) measured it; below 0x8000, so Windows keeps it.
 const U5_PORT = 31643
 const EXE = OS === "linux" ? path.join(INSTALL, "squashfs-root", "AppRun") : path.join(INSTALL, "OpenCode.exe")
 const END = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"])
+// The home screen's button for a draft in the service's home; the label follows the UI language.
+const NEW_SESSION = "button[aria-label='Новая сессия'], button[aria-label='New session']"
 
 const results: Json = { os: OS, artifact: { file: path.basename(ARTIFACT), bytes: statSync(ARTIFACT).size }, baseline: BASELINE }
 const mock = startMock(MOCK_PORT, path.join(RUN, "llm.jsonl"))
@@ -54,7 +62,7 @@ try {
 } catch (error) {
   results.error = String(error instanceof Error ? (error.stack ?? error.message) : error)
 } finally {
-  results.cleanup = cleanup()
+  results.cleanup = await cleanup()
   mock.stop(true)
   writeFileSync(path.join(RUN, "report.json"), JSON.stringify(results, null, 2))
   report(BASELINE ? "B0.4 U5 CLI only" : "B0.4", verdict(), results.points ?? results.error ?? results)
@@ -65,8 +73,8 @@ async function lifecycle() {
   service = await registered(app.started)
   results.service = { ...describe(service), registeredMs: service.registeredMs }
   results.u5 = {
-    files: readdirSync(STATE).filter((name) => name.startsWith("service")),
-    defaultFile: existsSync(path.join(STATE, "service.json")),
+    files: serviceFiles(),
+    defaultFile: defaultFile(),
     port: Number(new URL(service.url).port),
     expectedPort: U5_PORT,
   }
@@ -94,7 +102,7 @@ async function lifecycle() {
   await until("second window", 60_000, () => cdp2.eval(`document.body.innerText.length > 0`))
   await cdp2.shot("03-second-launch")
   results.secondLaunch.close = await close(cdp2, again, undefined)
-  service = JSON.parse(readFileSync(REGISTRATION, "utf8"))
+  service = JSON.parse(readFileSync(registrationFile(), "utf8"))
   results.secondLaunch.afterClose = await probe(service!)
 
   results.uninstall = await uninstall()
@@ -106,11 +114,11 @@ async function lifecycle() {
 // The CLI registers under its identity while the Desktop, without its seam, waits for service.json.
 async function baseline(app: ReturnType<typeof launch>) {
   const started = app.started
-  const registration = await until("CLI registration", 90_000, () => (existsSync(REGISTRATION) ? JSON.parse(readFileSync(REGISTRATION, "utf8")) : undefined))
+  const registration = await until("CLI registration", 90_000, () => (existsSync(registrationFile()) ? JSON.parse(readFileSync(registrationFile(), "utf8")) : undefined))
   results.service = describe(registration)
   service = registration
   await Bun.sleep(130_000 - (Date.now() - started))
-  results.u5 = { files: readdirSync(STATE).filter((name) => name.startsWith("service")), defaultFile: existsSync(path.join(STATE, "service.json")) }
+  results.u5 = { files: serviceFiles(), defaultFile: defaultFile() }
   results.serviceProcesses = processes("opencode-cli").length
   results.mainLog = mainLog().filter((line) => /background service|Timed out|failed to start|ensure/i.test(line)).slice(-12)
   const cdp = await connect(CDP_PORT.first)
@@ -165,7 +173,7 @@ function install() {
     rmSync(appimage)
     return { method: "AppImage --appimage-extract", exitCode: extract.exitCode, ms: Date.now() - started, exe: existsSync(EXE), bytes: size(INSTALL) }
   }
-  const nsis = Bun.spawnSync([ARTIFACT, "/S", "/currentuser", `/D=${INSTALL}`], { env: windowsEnv(), stdout: "ignore", stderr: "ignore" })
+  const nsis = Bun.spawnSync([ARTIFACT, "/S", "/currentuser", `/D=${INSTALL}`], { env: installerEnv(), stdout: "ignore", stderr: "ignore" })
   return {
     method: "NSIS /S /currentuser /D=",
     exitCode: nsis.exitCode,
@@ -203,15 +211,21 @@ function launch(round: "first" | "second") {
   return { child, started, round }
 }
 
-// On Windows the service's home follows USERPROFILE, and TEMP keeps installer and Chromium temp files in the run folder.
+// The installer and uninstaller run in the real profile, as for a user: NSIS expands the shortcut folders from
+// USERPROFILE, so a redirected one would hide the shortcuts. TEMP keeps their unpacked plugins in the run folder.
+function installerEnv() {
+  return { ...process.env, TEMP: path.join(RUN, "tmp"), TMP: path.join(RUN, "tmp") } as Record<string, string>
+}
+
+// On Windows the service's home follows USERPROFILE, and TEMP keeps Chromium temp files in the run folder.
 function windowsEnv() {
   return { ...process.env, USERPROFILE: HOME, TEMP: path.join(RUN, "tmp"), TMP: path.join(RUN, "tmp") } as Record<string, string>
 }
 
 async function registered(started: number) {
   const info = await until("service registration", 120_000, async () => {
-    if (!existsSync(REGISTRATION)) return undefined
-    const registration = JSON.parse(readFileSync(REGISTRATION, "utf8"))
+    if (!existsSync(registrationFile())) return undefined
+    const registration = JSON.parse(readFileSync(registrationFile(), "utf8"))
     const answer = await api(registration, "GET", "/api/info").catch(() => undefined)
     return answer?.pid === registration.pid ? { ...registration, registeredMs: Date.now() - started } : undefined
   })
@@ -219,11 +233,16 @@ async function registered(started: number) {
 }
 
 async function chat(cdp: Awaited<ReturnType<typeof connect>>, sse: { events: Json[] }) {
-  await until("home or draft", 60_000, () => cdp.eval(`!!document.querySelector("button[aria-label='Новая сессия'], [contenteditable=true]")`))
+  await until("home or draft", 60_000, () => cdp.eval(`!!document.querySelector("${NEW_SESSION}, [contenteditable=true]")`))
   await cdp.shot("00-first-window")
   results.firstWindow = await cdp.eval(`document.body.innerText.slice(0, 300)`)
-  await cdp.eval(`document.querySelector("button[aria-label='Новая сессия']")?.click()`)
-  await until("draft composer", 30_000, () => cdp.eval(`!!document.querySelector("[contenteditable=true]")`))
+  // The button shows before the window has its connection to the service; a click before that opens nothing, so it repeats.
+  await until("draft composer", 60_000, async () => {
+    if (await cdp.eval(`!!document.querySelector("[contenteditable=true]")`)) return true
+    await cdp.eval(`document.querySelector("${NEW_SESSION}")?.click()`)
+    await Bun.sleep(2000)
+    return cdp.eval(`!!document.querySelector("[contenteditable=true]")`)
+  })
   await Bun.sleep(1000)
   const reply = "Установленная сборка ответила."
   const from = sse.events.length
@@ -276,7 +295,7 @@ async function adoption(started: number, firstLog: string | undefined) {
     if (index === -1) return undefined
     return lines.slice(index, index + 8).join(" ")
   })
-  const registration = JSON.parse(readFileSync(REGISTRATION, "utf8"))
+  const registration = JSON.parse(readFileSync(registrationFile(), "utf8"))
   return {
     connectedMs: Date.now() - started,
     probed: /probed: true/.test(ready),
@@ -294,7 +313,7 @@ async function uninstall() {
   }
   const uninstaller = readdirSync(INSTALL).find((name) => /^Uninstall .*\.exe$/.test(name))
   if (!uninstaller) throw new Error("uninstaller missing")
-  const run = Bun.spawnSync([path.join(INSTALL, uninstaller), "/S", "/currentuser"], { env: windowsEnv(), stdout: "ignore", stderr: "ignore" })
+  const run = Bun.spawnSync([path.join(INSTALL, uninstaller), "/S", "/currentuser"], { env: installerEnv(), stdout: "ignore", stderr: "ignore" })
   // The NSIS uninstaller copies itself to TEMP and returns at once; the copy removes the files.
   await until("install folder removed", 120_000, () => !existsSync(EXE)).catch(() => false)
   await Bun.sleep(2000)
@@ -306,6 +325,9 @@ async function uninstall() {
     left: existsSync(INSTALL) ? readdirSync(INSTALL) : [],
     entries: uninstallEntries(),
     shortcuts: shortcuts(),
+    // The packaged app registers opencode:// for the user on every start (OPENCODE_DESKTOP_DISABLE_PROTOCOL_REGISTRATION
+    // applies only unpackaged); the uninstaller does not remove it.
+    protocol: protocolCommand(),
   }
 }
 
@@ -320,7 +342,7 @@ async function serviceStop(registration: Json) {
     XDG_DATA_HOME: path.join(ROOT, "data"),
     XDG_CONFIG_HOME: path.join(ROOT, "config"),
     XDG_CACHE_HOME: path.join(ROOT, "cache"),
-    XDG_STATE_HOME: path.join(ROOT, "state"),
+    XDG_STATE_HOME: path.dirname(state()),
     LOGINOM_SPIKE_U5_IDENTITY: IDENTITY,
   }
   const run = Bun.spawnSync([cli, "service", "stop"], { cwd: HOME, env, stdout: "pipe", stderr: "pipe" })
@@ -340,7 +362,7 @@ async function probe(registration: Json) {
   return {
     alive: alive(registration.pid),
     answers: info?.pid === registration.pid,
-    registration: existsSync(REGISTRATION),
+    registration: existsSync(registrationFile()),
     image: alive(registration.pid) ? image(registration.pid) : undefined,
   }
 }
@@ -351,10 +373,10 @@ function points() {
   return {
     install: ok(results.install.exitCode === 0 && results.install.exe),
     "service-started": ok(!!results.service && results.serviceImage?.startsWith(ROOT)),
-    "u5-own-file-and-port": ok(results.u5.files.join() === `service-${IDENTITY}.json` && !results.u5.defaultFile && results.u5.port === U5_PORT),
+    "u5-own-file-and-port": ok(results.u5.files.length === 1 && results.u5.files[0].endsWith(`service-${IDENTITY}.json`) && !results.u5.defaultFile && results.u5.port === U5_PORT),
     chat: ok(results.chat.end === "session.execution.succeeded" && results.chat.shownInWindow && results.chat.modelRequests > 0),
     "normal-close": ok(close.exitCode === 0 && close.appProcessesAfter === 0),
-    uninstall: ok(results.uninstall.installGone && (OS === "linux" || (results.uninstall.exitCode === 0 && results.uninstall.entries.length === 0))),
+    uninstall: ok(results.uninstall.installGone && (OS === "linux" || (results.uninstall.exitCode === 0 && results.uninstall.entries.length === 0 && results.uninstall.shortcuts.length === 0))),
     "service-after-close": results.afterClose.every((sample: Json) => sample.alive && sample.answers) ? "ALIVE" : "STOPPED",
     "service-after-uninstall": results.afterUninstall.alive ? "ALIVE" : "STOPPED",
     "second-launch": results.secondLaunch.samePid ? "ADOPTED" : "NEW",
@@ -366,17 +388,27 @@ function verdict() {
   return Object.values(results.points).includes("FAIL") ? "FAIL" : "PASS"
 }
 
-// Whatever is left after the run: the app by its process group or install path, the service by its registered pid.
-function cleanup() {
+// Whatever is left after the run: the app by its process group or install path, the service by its registered pid, the
+// installation by its uninstaller, and on Windows the opencode:// key the app registered, if it points into this run.
+async function cleanup() {
   const left: Json = { app: appProcesses().length, service: service && alive(service.pid) ? service.pid : undefined }
   if (launched.app && launched.app.child.exitCode === null) kill(launched.app.child.pid, true)
   appProcesses().forEach((pid) => kill(pid, false))
   if (service && alive(service.pid)) kill(service.pid, false)
   if (OS === "windows" && existsSync(EXE)) {
     const uninstaller = readdirSync(INSTALL).find((name) => /^Uninstall .*\.exe$/.test(name))
-    if (uninstaller) Bun.spawnSync([path.join(INSTALL, uninstaller), "/S", "/currentuser"], { env: windowsEnv() })
+    if (uninstaller) Bun.spawnSync([path.join(INSTALL, uninstaller), "/S", "/currentuser"], { env: installerEnv() })
+    left.uninstalled = await until("install folder removed", 60_000, () => !existsSync(EXE)).catch(() => false)
+  }
+  if (OS === "windows" && protocolCommand().includes(INSTALL)) {
+    powershell("Remove-Item -LiteralPath 'HKCU:\\Software\\Classes\\opencode' -Recurse")
+    left.protocolKeyRemoved = !protocolCommand()
   }
   return left
+}
+
+function protocolCommand() {
+  return powershell("(Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Classes\\opencode\\shell\\open\\command' -ErrorAction SilentlyContinue).'(default)'")
 }
 
 function kill(pid: number, group: boolean) {
@@ -459,7 +491,7 @@ function uninstallEntries() {
 
 function shortcuts() {
   return powershell(
-    `@([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop')) | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue } | Where-Object { (New-Object -ComObject WScript.Shell).CreateShortcut($_.FullName).TargetPath -like '${INSTALL}*' } | ForEach-Object { $_.FullName }`,
+    `@([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop')) | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue } | Where-Object { $_.Name -like 'OpenCode*' } | ForEach-Object { $_.Name }`,
   )
     .split(/\r?\n/)
     .filter(Boolean)

@@ -2,10 +2,10 @@
 # B0.4: an installed build of the sandbox (U1, U3, U5 with its Desktop seam) with upstream's own build scripts.
 # Usage: build-installed.sh linux|windows
 #   linux   → .run/b0-installed/dist-linux/opencode-desktop-linux-x86_64.AppImage
-#   windows → .run/b0-installed/dist-windows/win-unpacked (cross-built here, no wine) and nsis-kit/ for the stand, where
-#             installed-windows.ps1 -Action nsis wraps the unpacked app into the NSIS installer. electron-builder on
-#             Linux runs the NSIS installer under wine to extract the uninstaller, so that step runs on Windows, as
-#             upstream's release flow does (--dir, then --prepackaged).
+#   windows → .run/b0-installed/dist-windows/win-unpacked: the unpacked Windows app, cross-built here without wine.
+#             The NSIS installer itself cannot be made here without wine: electron-builder runs it under wine to extract
+#             the uninstaller. B0.4b builds the installer on the stand instead (installed-windows.sh), from the same
+#             scripts and config; the stand's upload link is too slow to carry this 360 MB app over.
 # Bun 1.4.4, the version upstream pins (@opencode/script refuses 1.4.3), lands in .run/cache with its SHA-256 checked.
 # Caches of Bun compile targets, electron-builder toolsets and Electron go to .run/cache too. Logs: .run/b0-installed/<os>/.
 set -eu
@@ -56,7 +56,4 @@ fi
 
 (cd "$desktop" && /usr/bin/time -v bunx electron-builder --win --x64 --dir --publish never --config "$here/harness/electron-builder.spike.ts") \
   > "$run/$os/builder-dir.log" 2>&1
-# The kit for `--prepackaged` on the stand (see harness/nsis-kit.ts) and the unpacked app as one archive for scp.
-bun "$here/harness/nsis-kit.ts" "$run/nsis-kit"
-(cd "$B0_DIST" && tar -cf - win-unpacked | gzip -1 > "$run/win-unpacked.tgz")
-ls -l "$run/win-unpacked.tgz"
+ls -l "$B0_DIST/win-unpacked"
